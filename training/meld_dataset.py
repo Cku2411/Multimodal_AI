@@ -11,14 +11,18 @@ import numpy as np
 import torch
 import subprocess
 
-csv_path = "../dataset/dev/dev_sent_emo.csv"
-video_path = "../dataset/dev/dev_splits_complete"
+dev_csv = "../dataset/dev/dev_sent_emo.csv"
+dev_video_dir = "../dataset/dev/dev_splits_complete"
+train_csv = "../dataset/train/train_sent_emo.csv"
+train_video_dir = "../dataset/train/train_splits"
+test_csv = "../dataset/test/test_sent_emo.csv"
+test_video_dir = "../dataset/test/output_repeated_splits_test"
 
 
 class MELDDataset(Dataset):
-    def __init__(self, csv_path, video_dỉr):  # Ham init tron gython
+    def __init__(self, csv_path, video_dir):  # Ham init tron gython
         self.data = pd.read_csv(csv_path)
-        self.video_dir = video_dỉr
+        self.video_dir = video_dir
 
         self.tokenizer = AutoTokenizer.from_pretrained("bert-base-uncased")
         # Anger, Disgust, Sadness, Joy, Neutral, Surprise and Fear
@@ -32,7 +36,7 @@ class MELDDataset(Dataset):
             "surprise": 6,
         }
 
-        self.sentiment_map = {"negative": 0, "neutral": 1, "positvie": 2}
+        self.sentiment_map = {"negative": 0, "neutral": 1, "positive": 2}
 
     def __len__(self):
         return len(self.data)
@@ -206,39 +210,56 @@ class MELDDataset(Dataset):
             print(f"Error processing {video_path}: {str(e)}")
             return None
 
-    def collate_fn(batch):
-        # Filter out None samples
-        batch = list(filter(None, batch))
-        return dataloader.default_collate(batch)
 
-    def prepare_dataloaders(
+def collate_fn(batch):
+    # Filter out None samples
+    batch = list(filter(None, batch))
+    return dataloader.default_collate(batch)
+
+
+def prepare_dataloaders(
+    train_csv,
+    train_video_dir,
+    dev_csv,
+    dev_video_dir,
+    test_csv,
+    test_video_dir,
+    batch_size=32,
+):
+    train_dataset = MELDDataset(train_csv, train_video_dir)
+    dev_dataset = MELDDataset(dev_csv, dev_video_dir)
+    test_dataset = MELDDataset(test_csv, test_video_dir)
+
+    train_loader = DataLoader(
+        train_dataset, batch_size=batch_size, shuffle=True, collate_fn=collate_fn
+    )
+
+    dev_loader = DataLoader(
+        dev_dataset, batch_size=batch_size, shuffle=True, collate_fn=collate_fn
+    )
+
+    test_loader = DataLoader(
+        test_dataset, batch_size=batch_size, shuffle=True, collate_fn=collate_fn
+    )
+
+    return train_loader, dev_loader, test_loader
+
+
+if __name__ == "__main__":
+    # get the loader
+    train_loader, dev_loader, test_loader = prepare_dataloaders(
         train_csv,
         train_video_dir,
         dev_csv,
         dev_video_dir,
         test_csv,
         test_video_dir,
-        batch_size=32,
-    ):
-        train_dataset = MELDDataset(train_csv, train_video_dir)
-        dev_dataset = MELDDataset(dev_csv, dev_video_dir)
-        test_dataset = MELDDataset(test_csv, test_video_dir)
+    )
 
-        train_loader = DataLoader(
-            train_dataset, batch_size=batch_size, shuffle=True, collate_fn=collate_fn
-        )
-
-        dev_loader = DataLoader(
-            dev_dataset, batch_size=batch_size, shuffle=True, collate_fn=collate_fn
-        )
-
-        test_loader = DataLoader(
-            test_dataset, batch_size=batch_size, shuffle=True, collate_fn=collate_fn
-        )
-
-        return train_loader, dev_loader, test_loader
-
-
-if __name__ == "__main__":
-    meld = MELDDataset(csv_path, video_path)
-    print(meld[0])
+    for batch in train_loader:
+        print(batch["text_inputs"])
+        print(batch["video_frames"].shape)
+        print(batch["audio_features"].shape)
+        print(batch["emotion_label"].shape)
+        print(batch["sentiment_label"].shape)
+        break

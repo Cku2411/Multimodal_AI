@@ -5,6 +5,8 @@ env/
 # Bỏ qua dữ liệu và file nén
 dataset/
 *.tar.gz
+.mp4
+.wav
 
 # Bỏ qua file biên dịch Python
 __pycache__/
