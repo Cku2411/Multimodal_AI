@@ -3,6 +3,10 @@ import torch.nn as nn
 from transformers import BertModel
 from torchvision import models as vision_models
 from meld_dataset import MELDDataset
+from sklearn.metrics import precision_score, accuracy_score
+
+# visulize data
+from torch.utils.tensorboard import SummaryWriter
 
 
 class TextEncoder(nn.Module):
@@ -151,6 +155,7 @@ class MultimodalTrainer:
         print(f"Validation samples: {val_size}")
         print(f"Batches per epoch: {len(train_loader):,}")
 
+        # Very high: 1, high: 0.1 - 0.01, medium: 1e-1, low: 1e-4 , very low: 1e-5
         self.optimizer = torch.optim.Adam(
             [
                 {"params": model.text_encoder.parameters(), "lr": 8e-6},
@@ -174,6 +179,7 @@ class MultimodalTrainer:
         # trong ML: epoch chỉ 1 vòng lặp mà mô hình sẽ duyệt toàn bộ tập huấn luyện để cập nhật trọng số của nó.
 
         # Cross-entropy: hàm loss
+        # chuyển mô hình sang mode "Train"
         self.model.train()
         running_loss = {"total": 0, "emotion": 0, "sentiment": 0}
 
@@ -219,16 +225,22 @@ class MultimodalTrainer:
 
         return {k: v / len(self.train_loader) for k, v in running_loss.item()}
 
-    def validate(self):
+    def evaluate(self, data_loader, phase="val"):
+        # Chuyển mô hình sang chế độ đánh giá.
         self.model.eval()
-        val_loss = {"total": 0, "emotion": 0, "sentiment": 0}
+        # Khởi tạo dict (object) để tích lũy loss
+        losses = {"total": 0, "emotion": 0, "sentiment": 0}
+        # list (array) lưu predictions và labels. chúng ta dùng list vì cần concatenate
         all_emotion_preds = []
         all_emotion_labels = []
         all_sentiment_preds = []
         all_sentiment_labels = []
 
+        # bật context manager của Pytorch, tắt gradient
         with torch.inference_mode():
-            for batch in self.val_loader:
+            # Lập qua DataLoader validation () (mỗi batch là dict chứa inputs và labels)
+            for batch in data_loader:
+                # check device từ mô hình, sau đó chuyển dữ liệu chạy trên device đó
                 device = next(self.model.parameters()).device
                 text_inputs = {
                     "input_ids": batch["text_input"]["input_ids"].to(device),
@@ -239,7 +251,7 @@ class MultimodalTrainer:
                 emotion_labels = batch["emotion_label"].to(device)
                 sentiment_labels = batch["sentiment_labels"].to(device)
 
-                # Forward paass:
+                # Forward paass (chạy customeModel forward) => {emotions: {}, sentiments: {}}
                 outputs = self.model(text_inputs, video_frames, audio_features)
 
                 # calculate losses using raw logits
@@ -264,11 +276,33 @@ class MultimodalTrainer:
                 all_sentiment_labels.extend(sentiment_labels.cpu().numpy())
 
                 # Track losses
-                val_loss["total"] += total_loss.item()
-                val_loss["emotion"] += emotion_loss.item()
-                val_loss["sentiment"] += sentiment_loss.item()
+                losses["total"] += total_loss.item()
+                losses["emotion"] += emotion_loss.item()
+                losses["sentiment"] += sentiment_loss.item()
 
-        avg_loss = {k: v / len(self.val_loader) for k, v in val_loss.item()}
+        avg_loss = {k: v / len(data_loader) for k, v in losses.items()}
+        # compute the precision and accurracy
+        emotion_precision = precision_score(
+            all_emotion_labels, all_emotion_preds, average="weighted"
+        )
+
+        emotion_accuracy = accuracy_score(all_emotion_labels, all_emotion_preds)
+
+        sentiment_precision = precision_score(
+            all_sentiment_labels, all_sentiment_preds, average="weighted"
+        )
+
+        sentiment_accuracy = accuracy_score(all_sentiment_labels, all_sentiment_preds)
+
+        if phase == "val":
+            self.scheduler.step(avg_loss["total"])
+
+        return avg_loss, {
+            "emotion_precision": emotion_precision,
+            "emotion_accuracy": emotion_accuracy,
+            "sentiment_precision": sentiment_precision,
+            "sentiment_accuracy": sentiment_accuracy,
+        }
 
 
 if __name__ == "__main__":
