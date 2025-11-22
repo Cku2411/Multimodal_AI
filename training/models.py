@@ -1,3 +1,5 @@
+from datetime import datetime
+import os
 import torch
 import torch.nn as nn
 from transformers import BertModel
@@ -97,7 +99,7 @@ class MultimodalSentimentModel(nn.Module):
 
         # Encoders
         self.text_encoder = TextEncoder()
-        self.video_endcoder = VideoEncoder()
+        self.video_encoder = VideoEncoder()
         self.audio_encoder = AudioEncoder()
 
         # fusion_layer
@@ -107,14 +109,14 @@ class MultimodalSentimentModel(nn.Module):
         )
 
         # Classification heads
-        self.emo_classifier = nn.Sequential(
+        self.emotion_classifier = nn.Sequential(
             nn.Linear(256, 64),
             nn.ReLU(),
             nn.Dropout(0.2),
             nn.Linear(64, 7),  # 7 emotions
         )
 
-        self.sentiment_calssifier = nn.Sequential(
+        self.sentiment_classifier = nn.Sequential(
             nn.Linear(256, 64),
             nn.ReLU(),
             nn.Dropout(0.2),
@@ -135,8 +137,8 @@ class MultimodalSentimentModel(nn.Module):
 
         fusion_features = self.fusion_layer(combined_features)
 
-        emotion_output = self.emo_classifier(fusion_features)
-        sentiment_output = self.sentiment_calssifier(fusion_features)
+        emotion_output = self.emotion_classifier(fusion_features)
+        sentiment_output = self.sentiment_cssifier(fusion_features)
 
         return {"emotions": emotion_output, "sentiments": sentiment_output}
 
@@ -148,12 +150,21 @@ class MultimodalTrainer:
         self.val_loader = val_loader
 
         # log dataset sized
-        train_size = len(train_loader.dataset())
-        val_size = len(val_loader)
+        train_size = len(train_loader.dataset)
+        val_size = len(val_loader.dataset)
         print("\nDataset sizes: ")
         print(f"Training samples: {train_size}")
         print(f"Validation samples: {val_size}")
         print(f"Batches per epoch: {len(train_loader):,}")
+
+        timestamp = datetime.now().strftime("%b%d_%H-%M-%S")
+        base_dir = (
+            "/opt/ml/output/tensorboard" if "SM_MODEL_DIR" in os.environ else "run"
+        )
+
+        log_dir = f"{base_dir}/run_{timestamp}"
+        self.writer = SummaryWriter(log_dir=log_dir)
+        self.global_step = 0
 
         # Very high: 1, high: 0.1 - 0.01, medium: 1e-1, low: 1e-4 , very low: 1e-5
         self.optimizer = torch.optim.Adam(
@@ -174,6 +185,65 @@ class MultimodalTrainer:
 
         self.emotion_criterion = nn.CrossEntropyLoss(label_smoothing=0.05)
         self.sentiment_criterion = nn.CrossEntropyLoss(label_smoothing=0.05)
+
+    def log_metrics(self, losses, metrics=None, phase="train"):
+        if phase == "train":
+            self.current_train_losses = losses
+        else:
+            self.writer.add_scalar(
+                "loss/total/train", self.current_train_losses["total"], self.global_step
+            )
+
+            self.writer.add_scalar("loss/total/val", losses["total"], self.global_step)
+
+            self.writer.add_scalar(
+                "loss/emotion/train",
+                self.current_train_losses["emotion"],
+                self.global_step,
+            )
+
+            self.writer.add_scalar(
+                "loss/emotion/val",
+                losses["emotion"],
+                self.global_step,
+            )
+
+            self.writer.add_scalar(
+                "loss/sentiment/train",
+                self.current_train_losses["sentiment"],
+                self.global_step,
+            )
+
+            self.writer.add_scalar(
+                "loss/sentiment/val",
+                losses["sentiment"],
+                self.global_step,
+            )
+
+        if metrics:
+            self.writer.add_scalar(
+                f"{phase}/emotion_precision",
+                metrics["emotion_precision"],
+                self.global_step,
+            )
+
+            self.writer.add_scalar(
+                f"{phase}/emotion_accuracy",
+                metrics["emotion_accuracy"],
+                self.global_step,
+            )
+
+            self.writer.add_scalar(
+                f"{phase}/sentiment_precision",
+                metrics["sentiment_precision"],  # Thay đổi từ metrics() thành metrics[]
+                self.global_step,
+            )
+
+            self.writer.add_scalar(
+                f"{phase}/sentiment_accuracy",
+                metrics["sentiment_accuracy"],  # Thay đổi từ metrics() thành metrics[]
+                self.global_step,
+            )
 
     def train_epoch(self):
         # trong ML: epoch chỉ 1 vòng lặp mà mô hình sẽ duyệt toàn bộ tập huấn luyện để cập nhật trọng số của nó.
@@ -220,6 +290,16 @@ class MultimodalTrainer:
             running_loss["total"] += total_loss.item()
             running_loss["emotion"] += emotion_loss.item()
             running_loss["sentiment"] += sentiment_loss.item()
+
+            self.log_metrics(
+                {
+                    "total": total_loss.item(),
+                    "emotion": emotion_loss.item(),
+                    "sentiment": sentiment_loss.item(),
+                }
+            )
+
+            self.global_step += 1
 
             # return {k,v} {k,v in running_loss()}
 
@@ -293,6 +373,18 @@ class MultimodalTrainer:
         )
 
         sentiment_accuracy = accuracy_score(all_sentiment_labels, all_sentiment_preds)
+
+        # log
+
+        self.log_metrics(
+            avg_loss,
+            {
+                "emotion_precision": emotion_precision,
+                "emotion_accuracy": emotion_accuracy,
+                "sentiment_precision": sentiment_precision,
+                "sentiment_accuracy": sentiment_accuracy,
+            },
+        )
 
         if phase == "val":
             self.scheduler.step(avg_loss["total"])
